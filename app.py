@@ -2,20 +2,20 @@ import streamlit as st
 import pandas as pd
 import re
 import difflib
-import io  # 텍스트 데이터를 읽기 위해 추가된 모듈
+import io
 from db_connector import NeonDBConnector
 
 # 1. 페이지 설정
 st.set_page_config(page_title="BigQuery Multi-Column Mapper", layout="wide")
 
 # ==========================================
-# 🔐 보안 모듈: 설정된 암호를 아는 사람만 접근 가능
+# 🔐 보안 모듈
 # ==========================================
 def check_password():
     def password_entered():
         if st.session_state["password"] == st.secrets["APP_ACCESS_PASSWORD"]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"] 
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
@@ -38,41 +38,33 @@ if not check_password():
 # ==========================================
 st.title("🧩 통합 매핑 분석 및 시계열 전처리 에이전트")
 
-# 하드코딩 룰
 DIV_SPECIAL_RULES = {
     "AV": "Audio", "CTV": "Commercial TV", "DS": "DS (Brand)",
     "ESS": "ESS BD", "LIGHTING": "Smart Lighting", "MOTOR": "Motor BD",
     "RAC": "RAC BD", "VACUUM CLEANER": "VCC", "WATER PURIFIER": "Water Care"
 }
 
-# DB 커넥터 로드
 try:
     db = NeonDBConnector()
 except Exception as e:
     st.error(f"DB 커넥터 로드 실패: {e}")
     st.stop()
 
-# --- [유틸리티 함수 1: 매핑 로직] ---
+# --- [유틸리티 함수] ---
 def apply_hybrid_matching(val, m_table, m_raw_map, m_clean_map, sorted_suffixes, similarity_threshold=0.75):
     if pd.isna(val): return None
     val_str, val_upper = str(val).strip(), str(val).strip().upper()
-    
     if m_table == "div_info_m" and val_upper in DIV_SPECIAL_RULES:
         rule_val = DIV_SPECIAL_RULES[val_upper]
         if rule_val.upper() in m_raw_map: return m_raw_map[rule_val.upper()]
-    
     val_clean = re.sub(r'[^a-zA-Z0-9]', '', val_upper)
     if val_clean in m_clean_map: return m_clean_map[val_clean]
-    
     for s in sorted_suffixes:
         clean_s = re.sub(r'[^a-zA-Z0-9]', '', str(s).upper())
         if (val_clean + clean_s) in m_clean_map: return m_clean_map[val_clean + clean_s]
-    
-    master_list = list(m_raw_map.values())
-    matches = difflib.get_close_matches(val_str, master_list, n=1, cutoff=similarity_threshold)
+    matches = difflib.get_close_matches(val_str, list(m_raw_map.values()), n=1, cutoff=similarity_threshold)
     return matches[0] if matches else None
 
-# --- [유틸리티 함수 2: 시계열 분석] ---
 def analyze_date_periodicity(series):
     try:
         valid_series = series.dropna()
@@ -82,18 +74,12 @@ def analyze_date_periodicity(series):
             dates = pd.to_datetime(valid_series.astype(str), format='%Y%m%d', errors='coerce').dropna().unique()
         else:
             dates = pd.to_datetime(valid_series, errors='coerce').dropna().unique()
-            
         dates = sorted(dates)
         if len(dates) < 2: return "분석 불가", 0, {}, None
-        
         df_diff = pd.DataFrame({"previous": dates[:-1], "current": dates[1:]})
         df_diff['gap'] = (df_diff['current'] - df_diff['previous']).dt.days
-        
-        avg_diff = df_diff['gap'].mean()
-        gap_counts = df_diff['gap'].value_counts()
-        main_gap = gap_counts.idxmax()
-        outliers = df_diff[df_diff['gap'] != main_gap].copy()
-        
+        avg_diff, gap_counts = df_diff['gap'].mean(), df_diff['gap'].value_counts()
+        outliers = df_diff[df_diff['gap'] != gap_counts.idxmax()].copy()
         if df_diff['gap'].std() < 1.5:
             if 0.8 <= avg_diff <= 1.2: desc = "📅 일별(Daily)"
             elif 6.5 <= avg_diff <= 7.5: desc = "📅 주별(Weekly)"
@@ -101,41 +87,48 @@ def analyze_date_periodicity(series):
             else: desc = f"📅 고정 주기({avg_diff:.1f}일)"
         else:
             desc = f"⚠️ 불규칙 (평균 {avg_diff:.1f}일)"
-            
         return desc, avg_diff, gap_counts.to_dict(), outliers
     except:
         return None, None, None, None
 
-# --- [UI: 데이터 입력 구역 (수정된 부분)] ---
+# --- [UI: 데이터 입력 구역 (Session State 적용)] ---
 st.subheader("📥 데이터 입력")
-source_df = None
 
-# 파일 업로드 방식과 복사/붙여넣기 방식을 탭으로 분리
+# 데이터를 메모리에 안전하게 보관하기 위한 초기화
+if 'source_df' not in st.session_state:
+    st.session_state['source_df'] = None
+
 tab1, tab2 = st.tabs(["📋 직접 붙여넣기 (권장)", "📁 파일 업로드"])
 
 with tab1:
-    st.markdown("엑셀에서 데이터를 표기할 **컬럼 헤더를 포함하여** 드래그 후 복사(Ctrl+C)하고 아래 빈칸에 붙여넣기(Ctrl+V) 하세요.")
-    pasted_text = st.text_area("데이터 붙여넣기:", height=200, placeholder="여기에 데이터를 붙여넣으세요...")
+    st.markdown("엑셀에서 데이터와 **컬럼 헤더**를 드래그하여 복사(Ctrl+C)한 뒤 아래 빈칸에 붙여넣기(Ctrl+V) 하세요.")
+    pasted_text = st.text_area("데이터 영역:", height=200, placeholder="여기에 데이터를 붙여넣으세요...")
     
-    if pasted_text.strip():
-        try:
-            # 엑셀에서 복사한 데이터는 탭(\t)으로 구분되므로 이를 파싱합니다.
-            source_df = pd.read_csv(io.StringIO(pasted_text), sep='\t')
-        except Exception as e:
-            st.error(f"데이터를 읽는 중 오류가 발생했습니다: {e}")
+    # 버튼 추가
+    if st.button("데이터 적용하기", key="btn_paste", type="primary"):
+        if pasted_text.strip():
+            try:
+                st.session_state['source_df'] = pd.read_csv(io.StringIO(pasted_text), sep='\t')
+            except Exception as e:
+                st.error(f"데이터를 읽는 중 오류가 발생했습니다: {e}")
 
 with tab2:
     uploaded_file = st.file_uploader("전처리할 엑셀 파일을 업로드하세요", type=['xlsx', 'csv'])
-    if uploaded_file:
-        try:
-            if uploaded_file.name.endswith('.csv'):
-                source_df = pd.read_csv(uploaded_file)
-            else:
-                source_df = pd.read_excel(uploaded_file)
-        except Exception as e:
-            st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
+    # 버튼 추가
+    if st.button("파일 적용하기", key="btn_upload", type="primary"):
+        if uploaded_file:
+            try:
+                if uploaded_file.name.endswith('.csv'):
+                    st.session_state['source_df'] = pd.read_csv(uploaded_file)
+                else:
+                    st.session_state['source_df'] = pd.read_excel(uploaded_file)
+            except Exception as e:
+                st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
 
-# --- [이하 데이터 처리 로직은 기존과 동일] ---
+# 메모리에 저장된 데이터 불러오기
+source_df = st.session_state['source_df']
+
+# --- [데이터 처리 및 UI 출력] ---
 if source_df is not None and not source_df.empty:
     st.success("데이터가 성공적으로 로드되었습니다!")
     st.subheader("📋 원본 데이터 프리뷰")
@@ -177,7 +170,13 @@ if source_df is not None and not source_df.empty:
                     success_df = final_df[final_df[mapped_name].notnull()]
                     distinct_map = success_df[[col, mapped_name]].drop_duplicates()
                     
-                    col_results[col] = {"rate": (len(success_df)/len(final_df))*100, "p_desc": p_desc, "avg_gap": avg_gap, "gap_dist": gap_dist, "outliers": outliers, "success_list": distinct_map, "fail_list": final_df[final_df[mapped_name].isnull()][[col]].drop_duplicates()}
+                    col_results[col] = {
+                        "rate": (len(success_df)/len(final_df))*100 if len(final_df) > 0 else 0,
+                        "p_desc": p_desc, "avg_gap": avg_gap, "gap_dist": gap_dist, "outliers": outliers, 
+                        "success_list": distinct_map, 
+                        "fail_list": final_df[final_df[mapped_name].isnull()][[col]].drop_duplicates(),
+                        "master_table": config['table']
+                    }
                     
                     case_lines = []
                     for _, row in distinct_map.iterrows():
@@ -188,27 +187,43 @@ if source_df is not None and not source_df.empty:
                     
                     sql_parts.append(f"  CASE\n" + "\n".join(case_lines) + f"\n    ELSE {col}\n  END AS {col}_CLEANED" if case_lines else f"  {col} AS {col}_CLEANED")
 
-            # --- 결과 리포트 출력 ---
+            # --- [수정된 결과 리포트 출력 구역 (과거 레이아웃 복구 + 시계열 통합)] ---
             st.success("✅ 매핑 및 분석 완료!")
+            
             for col in target_cols:
                 res = col_results[col]
                 with st.container():
-                    st.markdown(f"### 📊 `{col}` 분석 결과")
+                    st.markdown(f"### 📊 컬럼 분석 결과: `{col}` (Master: {res['master_table']})")
+                    
+                    # 1. 상단 지표 영역
                     m1, m2, m3 = st.columns(3)
                     m1.metric("매핑 성공률", f"{res['rate']:.1f}%")
                     if res['p_desc']:
                         m2.metric("데이터 주기성", res['p_desc'])
                         m3.metric("평균 날짜 간격", f"{res['avg_gap']:.1f}일")
-                        
+                    
+                    # 2. 날짜 분석 차트 영역 (날짜 데이터일 때만 표시)
+                    if res['p_desc']:
                         st.write("**📅 날짜 간격 분포 및 특이 데이터**")
                         g1, g2 = st.columns([2, 1])
                         g1.bar_chart(res['gap_dist'])
                         with g2:
                             if res['outliers'] is not None and not res['outliers'].empty:
                                 st.warning(f"특이 간격 발견 ({len(res['outliers'])}건)")
-                                st.dataframe(res['outliers'], hide_index=True)
+                                st.dataframe(res['outliers'], hide_index=True, use_container_width=True)
                             else:
                                 st.success("모든 간격이 일정합니다.")
+                        st.write("") # 간격 띄우기
+                    
+                    # 3. 매핑 성공/실패 리스트 영역 (항상 양옆으로 표시!)
+                    c_success, c_fail = st.columns(2)
+                    with c_success:
+                        st.markdown(f"✅ <span style='color:green;font-size:14px'>매핑 성공 (총 {len(res['success_list'])}개 유형)</span>", unsafe_allow_html=True)
+                        st.dataframe(res['success_list'], use_container_width=True, height=250, hide_index=True)
+                    with c_fail:
+                        st.markdown(f"❌ <span style='color:red;font-size:14px'>매핑 실패 (총 {len(res['fail_list'])}개 유형)</span>", unsafe_allow_html=True)
+                        st.dataframe(res['fail_list'], use_container_width=True, height=250, hide_index=True)
+                        
                     st.divider()
 
             st.subheader("📝 최종 전처리 SQL (BigQuery)")
