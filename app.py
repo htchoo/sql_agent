@@ -50,7 +50,7 @@ except Exception as e:
     st.error(f"DB 커넥터 로드 실패: {e}")
     st.stop()
 
-# --- [유틸리티 함수 1: 데이터 매핑] ---
+# --- [유틸리티 함수] ---
 def apply_hybrid_matching(val, m_table, m_raw_map, m_clean_map, sorted_suffixes, similarity_threshold=0.75):
     if pd.isna(val): return None
     val_str, val_upper = str(val).strip(), str(val).strip().upper()
@@ -65,7 +65,6 @@ def apply_hybrid_matching(val, m_table, m_raw_map, m_clean_map, sorted_suffixes,
     matches = difflib.get_close_matches(val_str, list(m_raw_map.values()), n=1, cutoff=similarity_threshold)
     return matches[0] if matches else None
 
-# --- [유틸리티 함수 2: 시계열 분석] ---
 def analyze_date_periodicity(series):
     try:
         valid_series = series.dropna()
@@ -92,43 +91,30 @@ def analyze_date_periodicity(series):
     except:
         return None, None, None, None
 
-# --- [🌟 신규 함수: 스마트 자동 매칭 로직] ---
 def find_best_master_table(col_name, all_tables):
     col_lower = str(col_name).lower()
-    
-    # 1. 완벽한 네이밍 규칙 매칭 (예: div -> div_info_m)
     for i, t in enumerate(all_tables):
         t_lower = t.lower()
         if t_lower == f"{col_lower}_info_m" or t_lower == f"{col_lower}_m" or t_lower == col_lower:
             return i
-            
-    # 2. 키워드 포함 매칭 (예: isbsd_rnr -> isbsd_info_m)
     first_word = col_lower.split('_')[0]
     for i, t in enumerate(all_tables):
         if first_word in t.lower():
             return i
-            
-    # 3. Fuzzy(유사도) 매칭 (철자가 비슷할 경우)
     matches = difflib.get_close_matches(col_lower, [t.lower() for t in all_tables], n=1, cutoff=0.4)
     if matches:
         return [t.lower() for t in all_tables].index(matches[0])
-        
-    return 0 # 매칭 실패 시 첫 번째 테이블 기본 반환
+    return 0
 
 def find_best_key_column(col_name, m_cols):
     col_lower = str(col_name).lower()
     m_cols_lower = [str(c).lower() for c in m_cols]
-    
-    # 1. 정확히 일치하는 컬럼명
     if col_lower in m_cols_lower:
         return m_cols_lower.index(col_lower)
-        
-    # 2. 유사도 기반 매칭 (예: ISBSD_RNR -> rnr)
     matches = difflib.get_close_matches(col_lower, m_cols_lower, n=1, cutoff=0.4)
     if matches:
         return m_cols_lower.index(matches[0])
-        
-    return 0 # 매칭 실패 시 첫 번째 컬럼 기본 반환
+    return 0
 
 # --- [UI: 데이터 입력 구역] ---
 st.subheader("📥 데이터 입력")
@@ -182,7 +168,6 @@ if source_df is not None and not source_df.empty:
             with config_cols[i]:
                 st.markdown(f"#### 📍 `{col}`")
                 
-                # 스마트 자동 선택 로직 호출
                 def_tab_idx = find_best_master_table(col, all_tables)
                 m_table = st.selectbox("마스터 테이블", all_tables, index=def_tab_idx, key=f"t_{col}")
                 
@@ -228,7 +213,7 @@ if source_df is not None and not source_df.empty:
                     
                     sql_parts.append(f"  CASE\n" + "\n".join(case_lines) + f"\n    ELSE {col}\n  END AS {col}_CLEANED" if case_lines else f"  {col} AS {col}_CLEANED")
 
-            # --- [결과 리포트 출력 구역] ---
+            # --- [최적화된 결과 리포트 출력 구역] ---
             st.success("✅ 매핑 및 분석 완료!")
             
             for col in target_cols:
@@ -238,21 +223,13 @@ if source_df is not None and not source_df.empty:
                     
                     m1, m2, m3 = st.columns(3)
                     m1.metric("매핑 성공률", f"{res['rate']:.1f}%")
-                    if res['p_desc']:
+                    
+                    # 날짜형 데이터로 판별된 경우(분석 불가 상태가 아닐 때)에만 주기성/간격 지표를 표시합니다.
+                    if res['p_desc'] and res['p_desc'] != "분석 불가":
                         m2.metric("데이터 주기성", res['p_desc'])
                         m3.metric("평균 날짜 간격", f"{res['avg_gap']:.1f}일")
                     
-                    if res['p_desc']:
-                        st.write("**📅 날짜 간격 분포 및 특이 데이터**")
-                        g1, g2 = st.columns([2, 1])
-                        g1.bar_chart(res['gap_dist'])
-                        with g2:
-                            if res['outliers'] is not None and not res['outliers'].empty:
-                                st.warning(f"특이 간격 발견 ({len(res['outliers'])}건)")
-                                st.dataframe(res['outliers'], hide_index=True, use_container_width=True)
-                            else:
-                                st.success("모든 간격이 일정합니다.")
-                        st.write("")
+                    # (날짜 간격 분포 및 특이 데이터 차트 구역 완전 삭제됨)
                     
                     c_success, c_fail = st.columns(2)
                     with c_success:
