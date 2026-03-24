@@ -34,10 +34,8 @@ if not check_password():
     st.stop()
 
 # ==========================================
-# 🚀 메인 앱 로직
+# 🚀 전역 설정 및 DB 커넥터 로드
 # ==========================================
-st.title("🧩 통합 매핑 분석 및 시계열 전처리 에이전트")
-
 DIV_SPECIAL_RULES = {
     "AV": "Audio", "CTV": "Commercial TV", "DS": "DS (Brand)",
     "ESS": "ESS BD", "LIGHTING": "Smart Lighting", "MOTOR": "Motor BD",
@@ -116,131 +114,206 @@ def find_best_key_column(col_name, m_cols):
         return m_cols_lower.index(matches[0])
     return 0
 
-# --- [UI: 데이터 입력 구역] ---
-st.subheader("📥 데이터 입력")
+# ==========================================
+# 🗂️ 사이드바 메뉴 설정
+# ==========================================
+st.sidebar.title("📌 메뉴")
+menu = st.sidebar.radio("작업을 선택하세요", ["데이터 전처리", "마스터 테이블 관리"])
 
-if 'source_df' not in st.session_state:
-    st.session_state['source_df'] = None
+# ==========================================
+# 🟢 메뉴 1: 데이터 전처리 (기존 로직)
+# ==========================================
+if menu == "데이터 전처리":
+    st.title("🧩 통합 매핑 분석 및 시계열 전처리")
+    st.subheader("📥 데이터 입력")
 
-tab1, tab2 = st.tabs(["📋 직접 붙여넣기 (권장)", "📁 파일 업로드"])
+    if 'source_df' not in st.session_state:
+        st.session_state['source_df'] = None
 
-with tab1:
-    st.markdown("엑셀에서 데이터와 **컬럼 헤더**를 드래그하여 복사(Ctrl+C)한 뒤 아래 빈칸에 붙여넣기(Ctrl+V) 하세요.")
-    pasted_text = st.text_area("데이터 영역:", height=200, placeholder="여기에 데이터를 붙여넣으세요...")
-    
-    if st.button("데이터 적용하기", key="btn_paste", type="primary"):
-        if pasted_text.strip():
-            try:
-                st.session_state['source_df'] = pd.read_csv(io.StringIO(pasted_text), sep='\t')
-            except Exception as e:
-                st.error(f"데이터를 읽는 중 오류가 발생했습니다: {e}")
+    tab1, tab2 = st.tabs(["📋 직접 붙여넣기 (권장)", "📁 파일 업로드"])
 
-with tab2:
-    uploaded_file = st.file_uploader("전처리할 엑셀 파일을 업로드하세요", type=['xlsx', 'csv'])
-    if st.button("파일 적용하기", key="btn_upload", type="primary"):
-        if uploaded_file:
-            try:
-                if uploaded_file.name.endswith('.csv'):
-                    st.session_state['source_df'] = pd.read_csv(uploaded_file)
-                else:
-                    st.session_state['source_df'] = pd.read_excel(uploaded_file)
-            except Exception as e:
-                st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
-
-source_df = st.session_state['source_df']
-
-# --- [데이터 처리 및 UI 출력] ---
-if source_df is not None and not source_df.empty:
-    st.success("데이터가 성공적으로 로드되었습니다!")
-    st.subheader("📋 원본 데이터 프리뷰")
-    st.dataframe(source_df.head(3), use_container_width=True)
-    
-    target_cols = st.multiselect("전처리 대상 컬럼 선택", source_df.columns)
-
-    if target_cols:
-        st.divider()
-        st.subheader("⚙️ 컬럼별 매핑 및 분석 설정")
-        all_tables = db.get_all_tables()
-        col_mapping_config = {}
-        config_cols = st.columns(len(target_cols))
+    with tab1:
+        st.markdown("엑셀에서 데이터와 **컬럼 헤더**를 복사(Ctrl+C)하여 붙여넣기(Ctrl+V) 하세요.")
+        pasted_text = st.text_area("데이터 영역:", height=200, placeholder="여기에 데이터를 붙여넣으세요...")
         
-        for i, col in enumerate(target_cols):
-            with config_cols[i]:
-                st.markdown(f"#### 📍 `{col}`")
-                
-                def_tab_idx = find_best_master_table(col, all_tables)
-                m_table = st.selectbox("마스터 테이블", all_tables, index=def_tab_idx, key=f"t_{col}")
-                
-                m_cols, _ = db.get_sample_data(m_table)
-                
-                def_key_idx = find_best_key_column(col, m_cols)
-                m_key = st.selectbox("기준 키", m_cols, index=def_key_idx, key=f"k_{col}")
-                
-                col_mapping_config[col] = {"table": m_table, "key": m_key, "threshold": st.slider("유사도 민감도", 0.0, 1.0, 0.75, key=f"s_{col}")}
+        if st.button("데이터 적용하기", key="btn_paste", type="primary"):
+            if pasted_text.strip():
+                try:
+                    st.session_state['source_df'] = pd.read_csv(io.StringIO(pasted_text), sep='\t')
+                except Exception as e:
+                    st.error(f"데이터를 읽는 중 오류가 발생했습니다: {e}")
 
-        if st.button("🚀 분석 실행", type="primary"):
-            final_df, sql_parts, col_results = source_df.copy(), [], {}
+    with tab2:
+        uploaded_file = st.file_uploader("전처리할 엑셀 파일을 업로드하세요", type=['xlsx', 'csv'], key="uf_main")
+        if st.button("파일 적용하기", key="btn_upload", type="primary"):
+            if uploaded_file:
+                try:
+                    if uploaded_file.name.endswith('.csv'):
+                        st.session_state['source_df'] = pd.read_csv(uploaded_file)
+                    else:
+                        st.session_state['source_df'] = pd.read_excel(uploaded_file)
+                except Exception as e:
+                    st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
 
-            with st.spinner("데이터 분석 중..."):
-                for col in target_cols:
-                    config = col_mapping_config[col]
-                    df_master = db.get_full_master_data(config['table'])
-                    raw_map = {str(k).upper().strip(): k for k in df_master[config['key']]}
-                    clean_map = {re.sub(r'[^a-zA-Z0-9]', '', str(k).upper()): k for k in df_master[config['key']]}
-                    suffixes = sorted(list({str(k)[5:] for k in raw_map.keys() if len(str(k)) > 5}), key=len)
-                    
-                    mapped_name = f"{col}_MAPPED"
-                    final_df[mapped_name] = final_df[col].apply(lambda x: apply_hybrid_matching(x, config['table'], raw_map, clean_map, suffixes, config['threshold']))
-                    
-                    p_desc, avg_gap, gap_dist, outliers = analyze_date_periodicity(final_df[col])
-                    success_df = final_df[final_df[mapped_name].notnull()]
-                    distinct_map = success_df[[col, mapped_name]].drop_duplicates()
-                    
-                    col_results[col] = {
-                        "rate": (len(success_df)/len(final_df))*100 if len(final_df) > 0 else 0,
-                        "p_desc": p_desc, "avg_gap": avg_gap, "gap_dist": gap_dist, "outliers": outliers, 
-                        "success_list": distinct_map, 
-                        "fail_list": final_df[final_df[mapped_name].isnull()][[col]].drop_duplicates(),
-                        "master_table": config['table']
-                    }
-                    
-                    case_lines = []
-                    for _, row in distinct_map.iterrows():
-                        src_val, dst_val = str(row[col]), str(row[mapped_name])
-                        if src_val != dst_val:
-                            safe_src, safe_dst = src_val.replace("'", "''"), dst_val.replace("'", "''")
-                            case_lines.append(f"    WHEN {col} = '{safe_src}' THEN '{safe_dst}'")
-                    
-                    sql_parts.append(f"  CASE\n" + "\n".join(case_lines) + f"\n    ELSE {col}\n  END AS {col}_CLEANED" if case_lines else f"  {col} AS {col}_CLEANED")
+    source_df = st.session_state['source_df']
 
-            # --- [최적화된 결과 리포트 출력 구역] ---
-            st.success("✅ 매핑 및 분석 완료!")
+    # --- [데이터 처리 및 UI 출력] ---
+    if source_df is not None and not source_df.empty:
+        st.success("데이터가 성공적으로 로드되었습니다!")
+        st.subheader("📋 원본 데이터 프리뷰")
+        st.dataframe(source_df.head(3), use_container_width=True)
+        
+        target_cols = st.multiselect("전처리 대상 컬럼 선택", source_df.columns)
+
+        if target_cols:
+            st.divider()
+            st.subheader("⚙️ 컬럼별 매핑 및 분석 설정")
+            # st.cache_data를 비워 항상 최신 테이블 목록을 가져옵니다.
+            db.get_all_tables.clear() if hasattr(db.get_all_tables, 'clear') else None 
+            all_tables = db.get_all_tables()
             
-            for col in target_cols:
-                res = col_results[col]
-                with st.container():
-                    st.markdown(f"### 📊 컬럼 분석 결과: `{col}` (Master: {res['master_table']})")
+            col_mapping_config = {}
+            config_cols = st.columns(len(target_cols))
+            
+            for i, col in enumerate(target_cols):
+                with config_cols[i]:
+                    st.markdown(f"#### 📍 `{col}`")
                     
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("매핑 성공률", f"{res['rate']:.1f}%")
+                    def_tab_idx = find_best_master_table(col, all_tables)
+                    m_table = st.selectbox("마스터 테이블", all_tables, index=def_tab_idx, key=f"t_{col}")
                     
-                    # 날짜형 데이터로 판별된 경우(분석 불가 상태가 아닐 때)에만 주기성/간격 지표를 표시합니다.
-                    if res['p_desc'] and res['p_desc'] != "분석 불가":
-                        m2.metric("데이터 주기성", res['p_desc'])
-                        m3.metric("평균 날짜 간격", f"{res['avg_gap']:.1f}일")
+                    m_cols, _ = db.get_sample_data(m_table)
                     
-                    # (날짜 간격 분포 및 특이 데이터 차트 구역 완전 삭제됨)
+                    def_key_idx = find_best_key_column(col, m_cols)
+                    m_key = st.selectbox("기준 키", m_cols, index=def_key_idx, key=f"k_{col}")
                     
-                    c_success, c_fail = st.columns(2)
-                    with c_success:
-                        st.markdown(f"✅ <span style='color:green;font-size:14px'>매핑 성공 (총 {len(res['success_list'])}개 유형)</span>", unsafe_allow_html=True)
-                        st.dataframe(res['success_list'], use_container_width=True, height=250, hide_index=True)
-                    with c_fail:
-                        st.markdown(f"❌ <span style='color:red;font-size:14px'>매핑 실패 (총 {len(res['fail_list'])}개 유형)</span>", unsafe_allow_html=True)
-                        st.dataframe(res['fail_list'], use_container_width=True, height=250, hide_index=True)
-                        
-                    st.divider()
+                    col_mapping_config[col] = {"table": m_table, "key": m_key, "threshold": st.slider("유사도 민감도", 0.0, 1.0, 0.75, key=f"s_{col}")}
 
-            st.subheader("📝 최종 전처리 SQL (BigQuery)")
-            full_sql = "SELECT\n  *,\n" + ",\n".join(sql_parts) + "\nFROM `데이터셋.테이블`"
-            st.code(full_sql, language="sql")
+            if st.button("🚀 분석 실행", type="primary"):
+                final_df, sql_parts, col_results = source_df.copy(), [], {}
+
+                with st.spinner("데이터 분석 중..."):
+                    for col in target_cols:
+                        config = col_mapping_config[col]
+                        df_master = db.get_full_master_data(config['table'])
+                        raw_map = {str(k).upper().strip(): k for k in df_master[config['key']]}
+                        clean_map = {re.sub(r'[^a-zA-Z0-9]', '', str(k).upper()): k for k in df_master[config['key']]}
+                        suffixes = sorted(list({str(k)[5:] for k in raw_map.keys() if len(str(k)) > 5}), key=len)
+                        
+                        mapped_name = f"{col}_MAPPED"
+                        final_df[mapped_name] = final_df[col].apply(lambda x: apply_hybrid_matching(x, config['table'], raw_map, clean_map, suffixes, config['threshold']))
+                        
+                        p_desc, avg_gap, gap_dist, outliers = analyze_date_periodicity(final_df[col])
+                        success_df = final_df[final_df[mapped_name].notnull()]
+                        distinct_map = success_df[[col, mapped_name]].drop_duplicates()
+                        
+                        col_results[col] = {
+                            "rate": (len(success_df)/len(final_df))*100 if len(final_df) > 0 else 0,
+                            "p_desc": p_desc, "avg_gap": avg_gap, "gap_dist": gap_dist, "outliers": outliers, 
+                            "success_list": distinct_map, 
+                            "fail_list": final_df[final_df[mapped_name].isnull()][[col]].drop_duplicates(),
+                            "master_table": config['table']
+                        }
+                        
+                        case_lines = []
+                        for _, row in distinct_map.iterrows():
+                            src_val, dst_val = str(row[col]), str(row[mapped_name])
+                            if src_val != dst_val:
+                                safe_src, safe_dst = src_val.replace("'", "''"), dst_val.replace("'", "''")
+                                case_lines.append(f"    WHEN {col} = '{safe_src}' THEN '{safe_dst}'")
+                        
+                        sql_parts.append(f"  CASE\n" + "\n".join(case_lines) + f"\n    ELSE {col}\n  END AS {col}_CLEANED" if case_lines else f"  {col} AS {col}_CLEANED")
+
+                st.success("✅ 매핑 및 분석 완료!")
+                
+                for col in target_cols:
+                    res = col_results[col]
+                    with st.container():
+                        st.markdown(f"### 📊 컬럼 분석 결과: `{col}` (Master: {res['master_table']})")
+                        
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("매핑 성공률", f"{res['rate']:.1f}%")
+                        
+                        if res['p_desc'] and res['p_desc'] != "분석 불가":
+                            m2.metric("데이터 주기성", res['p_desc'])
+                            m3.metric("평균 날짜 간격", f"{res['avg_gap']:.1f}일")
+                        
+                        c_success, c_fail = st.columns(2)
+                        with c_success:
+                            st.markdown(f"✅ <span style='color:green;font-size:14px'>매핑 성공 (총 {len(res['success_list'])}개 유형)</span>", unsafe_allow_html=True)
+                            st.dataframe(res['success_list'], use_container_width=True, height=250, hide_index=True)
+                        with c_fail:
+                            st.markdown(f"❌ <span style='color:red;font-size:14px'>매핑 실패 (총 {len(res['fail_list'])}개 유형)</span>", unsafe_allow_html=True)
+                            st.dataframe(res['fail_list'], use_container_width=True, height=250, hide_index=True)
+                            
+                        st.divider()
+
+                st.subheader("📝 최종 전처리 SQL (BigQuery)")
+                full_sql = "SELECT\n  *,\n" + ",\n".join(sql_parts) + "\nFROM `데이터셋.테이블`"
+                st.code(full_sql, language="sql")
+
+# ==========================================
+# 🔵 메뉴 2: 마스터 테이블 관리 (신규 로직)
+# ==========================================
+elif menu == "마스터 테이블 관리":
+    st.title("🗂️ 신규 마스터 테이블 등록")
+    st.info("DB에 새로운 기준 정보(Master)를 업로드하여 팀원들과 공유할 수 있습니다.")
+
+    # 테이블 이름 입력 받기
+    new_table_name = st.text_input("생성할 마스터 테이블 영문 이름 (예: new_product_info_m)", placeholder="띄어쓰기 대신 언더바(_) 사용").strip().lower()
+
+    if 'master_df' not in st.session_state:
+        st.session_state['master_df'] = None
+
+    tab1, tab2 = st.tabs(["📋 직접 붙여넣기 (권장)", "📁 파일 업로드"])
+
+    with tab1:
+        st.markdown("새로운 마스터로 사용할 데이터와 **컬럼 헤더**를 붙여넣기 하세요.")
+        pasted_master = st.text_area("데이터 영역:", height=200, placeholder="여기에 마스터 데이터를 붙여넣으세요...")
+        
+        if st.button("마스터 데이터 읽기", key="btn_master_paste"):
+            if pasted_master.strip():
+                try:
+                    st.session_state['master_df'] = pd.read_csv(io.StringIO(pasted_master), sep='\t')
+                    st.success("데이터를 성공적으로 읽었습니다!")
+                except Exception as e:
+                    st.error(f"데이터를 읽는 중 오류가 발생했습니다: {e}")
+
+    with tab2:
+        uploaded_master = st.file_uploader("마스터 엑셀/CSV 업로드", type=['xlsx', 'csv'], key="uf_master")
+        if st.button("마스터 파일 읽기", key="btn_master_upload"):
+            if uploaded_master:
+                try:
+                    if uploaded_master.name.endswith('.csv'):
+                        st.session_state['master_df'] = pd.read_csv(uploaded_master)
+                    else:
+                        st.session_state['master_df'] = pd.read_excel(uploaded_master)
+                    st.success("파일을 성공적으로 읽었습니다!")
+                except Exception as e:
+                    st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
+
+    master_df = st.session_state['master_df']
+
+    # 데이터 미리보기 및 DB 전송
+    if master_df is not None and not master_df.empty:
+        st.subheader("👀 등록할 마스터 데이터 미리보기")
+        st.dataframe(master_df.head(5), use_container_width=True)
+        st.write(f"총 데이터 건수: {len(master_df)}건 / 컬럼 수: {len(master_df.columns)}개")
+
+        if st.button("🚀 DB에 마스터 테이블 최종 등록하기", type="primary"):
+            if not new_table_name:
+                st.warning("테이블 이름을 먼저 입력해 주세요!")
+            elif not re.match("^[a-z0-9_]+$", new_table_name):
+                st.warning("테이블 이름은 영문 소문자, 숫자, 언더바(_)만 사용 가능합니다.")
+            else:
+                with st.spinner(f"'{new_table_name}' 테이블을 생성 중입니다..."):
+                    # db_connector에 새로 만든 함수 호출
+                    success, message = db.upload_master_table(master_df, new_table_name)
+                    
+                    if success:
+                        st.success(message)
+                        st.balloons()
+                        # 업로드 완료 후 세션 초기화
+                        st.session_state['master_df'] = None
+                    else:
+                        st.error(message)
