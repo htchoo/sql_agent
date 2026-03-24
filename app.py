@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 import difflib
+import io  # 텍스트 데이터를 읽기 위해 추가된 모듈
 from db_connector import NeonDBConnector
 
 # 1. 페이지 설정
@@ -11,36 +12,29 @@ st.set_page_config(page_title="BigQuery Multi-Column Mapper", layout="wide")
 # 🔐 보안 모듈: 설정된 암호를 아는 사람만 접근 가능
 # ==========================================
 def check_password():
-    """Returns `True` if the user had the correct password."""
     def password_entered():
-        # st.secrets에 저장된 암호와 입력한 암호가 같은지 확인
         if st.session_state["password"] == st.secrets["APP_ACCESS_PASSWORD"]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # 보안을 위해 입력한 암호 삭제
+            del st.session_state["password"] 
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # 최초 접속 시 암호 입력 창 표시
         st.title("🔒 SQL Agent 보안 접속")
         st.text_input("접근 암호를 입력하세요 (Access Key)", type="password", on_change=password_entered, key="password")
         return False
-    
     elif not st.session_state["password_correct"]:
-        # 암호가 틀렸을 때
         st.title("🔒 SQL Agent 보안 접속")
         st.text_input("접근 암호를 입력하세요 (Access Key)", type="password", on_change=password_entered, key="password")
         st.error("😕 암호가 올바르지 않습니다.")
         return False
-    
     return True
 
-# 암호를 통과하지 못하면 여기서 앱 실행을 멈춤
 if not check_password():
     st.stop()
 
 # ==========================================
-# 🚀 메인 앱 로직 (암호 통과 후 실행됨)
+# 🚀 메인 앱 로직
 # ==========================================
 st.title("🧩 통합 매핑 분석 및 시계열 전처리 에이전트")
 
@@ -51,14 +45,14 @@ DIV_SPECIAL_RULES = {
     "RAC": "RAC BD", "VACUUM CLEANER": "VCC", "WATER PURIFIER": "Water Care"
 }
 
-# DB 커넥터 로드 (st.secrets를 사용하여 안전하게 로드하도록 db_connector.py도 수정 권장)
+# DB 커넥터 로드
 try:
     db = NeonDBConnector()
 except Exception as e:
     st.error(f"DB 커넥터 로드 실패: {e}")
     st.stop()
 
-# (이하 기존 apply_hybrid_matching, analyze_date_periodicity 함수 동일 유지)
+# --- [유틸리티 함수 1: 매핑 로직] ---
 def apply_hybrid_matching(val, m_table, m_raw_map, m_clean_map, sorted_suffixes, similarity_threshold=0.75):
     if pd.isna(val): return None
     val_str, val_upper = str(val).strip(), str(val).strip().upper()
@@ -78,6 +72,7 @@ def apply_hybrid_matching(val, m_table, m_raw_map, m_clean_map, sorted_suffixes,
     matches = difflib.get_close_matches(val_str, master_list, n=1, cutoff=similarity_threshold)
     return matches[0] if matches else None
 
+# --- [유틸리티 함수 2: 시계열 분석] ---
 def analyze_date_periodicity(series):
     try:
         valid_series = series.dropna()
@@ -111,14 +106,46 @@ def analyze_date_periodicity(series):
     except:
         return None, None, None, None
 
-# --- [UI 및 로직 시작] ---
-uploaded_file = st.file_uploader("전처리할 엑셀 파일을 업로드하세요", type=['xlsx'])
+# --- [UI: 데이터 입력 구역 (수정된 부분)] ---
+st.subheader("📥 데이터 입력")
+source_df = None
 
-if uploaded_file:
-    source_df = pd.read_excel(uploaded_file)
+# 파일 업로드 방식과 복사/붙여넣기 방식을 탭으로 분리
+tab1, tab2 = st.tabs(["📋 직접 붙여넣기 (권장)", "📁 파일 업로드"])
+
+with tab1:
+    st.markdown("엑셀에서 데이터를 표기할 **컬럼 헤더를 포함하여** 드래그 후 복사(Ctrl+C)하고 아래 빈칸에 붙여넣기(Ctrl+V) 하세요.")
+    pasted_text = st.text_area("데이터 붙여넣기:", height=200, placeholder="여기에 데이터를 붙여넣으세요...")
+    
+    if pasted_text.strip():
+        try:
+            # 엑셀에서 복사한 데이터는 탭(\t)으로 구분되므로 이를 파싱합니다.
+            source_df = pd.read_csv(io.StringIO(pasted_text), sep='\t')
+        except Exception as e:
+            st.error(f"데이터를 읽는 중 오류가 발생했습니다: {e}")
+
+with tab2:
+    uploaded_file = st.file_uploader("전처리할 엑셀 파일을 업로드하세요", type=['xlsx', 'csv'])
+    if uploaded_file:
+        try:
+            if uploaded_file.name.endswith('.csv'):
+                source_df = pd.read_csv(uploaded_file)
+            else:
+                source_df = pd.read_excel(uploaded_file)
+        except Exception as e:
+            st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
+
+# --- [이하 데이터 처리 로직은 기존과 동일] ---
+if source_df is not None and not source_df.empty:
+    st.success("데이터가 성공적으로 로드되었습니다!")
+    st.subheader("📋 원본 데이터 프리뷰")
+    st.dataframe(source_df.head(3), use_container_width=True)
+    
     target_cols = st.multiselect("전처리 대상 컬럼 선택", source_df.columns)
 
     if target_cols:
+        st.divider()
+        st.subheader("⚙️ 컬럼별 매핑 및 분석 설정")
         all_tables = db.get_all_tables()
         col_mapping_config = {}
         config_cols = st.columns(len(target_cols))
@@ -135,32 +162,34 @@ if uploaded_file:
         if st.button("🚀 분석 실행", type="primary"):
             final_df, sql_parts, col_results = source_df.copy(), [], {}
 
-            for col in target_cols:
-                config = col_mapping_config[col]
-                df_master = db.get_full_master_data(config['table'])
-                raw_map = {str(k).upper().strip(): k for k in df_master[config['key']]}
-                clean_map = {re.sub(r'[^a-zA-Z0-9]', '', str(k).upper()): k for k in df_master[config['key']]}
-                suffixes = sorted(list({str(k)[5:] for k in raw_map.keys() if len(str(k)) > 5}), key=len)
-                
-                mapped_name = f"{col}_MAPPED"
-                final_df[mapped_name] = final_df[col].apply(lambda x: apply_hybrid_matching(x, config['table'], raw_map, clean_map, suffixes, config['threshold']))
-                
-                p_desc, avg_gap, gap_dist, outliers = analyze_date_periodicity(final_df[col])
-                success_df = final_df[final_df[mapped_name].notnull()]
-                distinct_map = success_df[[col, mapped_name]].drop_duplicates()
-                
-                col_results[col] = {"rate": (len(success_df)/len(final_df))*100, "p_desc": p_desc, "avg_gap": avg_gap, "gap_dist": gap_dist, "outliers": outliers, "success_list": distinct_map, "fail_list": final_df[final_df[mapped_name].isnull()][[col]].drop_duplicates()}
-                
-                case_lines = []
-                for _, row in distinct_map.iterrows():
-                    src_val, dst_val = str(row[col]), str(row[mapped_name])
-                    if src_val != dst_val:
-                        safe_src, safe_dst = src_val.replace("'", "''"), dst_val.replace("'", "''")
-                        case_lines.append(f"    WHEN {col} = '{safe_src}' THEN '{safe_dst}'")
-                
-                sql_parts.append(f"  CASE\n" + "\n".join(case_lines) + f"\n    ELSE {col}\n  END AS {col}_CLEANED" if case_lines else f"  {col} AS {col}_CLEANED")
+            with st.spinner("데이터 분석 중..."):
+                for col in target_cols:
+                    config = col_mapping_config[col]
+                    df_master = db.get_full_master_data(config['table'])
+                    raw_map = {str(k).upper().strip(): k for k in df_master[config['key']]}
+                    clean_map = {re.sub(r'[^a-zA-Z0-9]', '', str(k).upper()): k for k in df_master[config['key']]}
+                    suffixes = sorted(list({str(k)[5:] for k in raw_map.keys() if len(str(k)) > 5}), key=len)
+                    
+                    mapped_name = f"{col}_MAPPED"
+                    final_df[mapped_name] = final_df[col].apply(lambda x: apply_hybrid_matching(x, config['table'], raw_map, clean_map, suffixes, config['threshold']))
+                    
+                    p_desc, avg_gap, gap_dist, outliers = analyze_date_periodicity(final_df[col])
+                    success_df = final_df[final_df[mapped_name].notnull()]
+                    distinct_map = success_df[[col, mapped_name]].drop_duplicates()
+                    
+                    col_results[col] = {"rate": (len(success_df)/len(final_df))*100, "p_desc": p_desc, "avg_gap": avg_gap, "gap_dist": gap_dist, "outliers": outliers, "success_list": distinct_map, "fail_list": final_df[final_df[mapped_name].isnull()][[col]].drop_duplicates()}
+                    
+                    case_lines = []
+                    for _, row in distinct_map.iterrows():
+                        src_val, dst_val = str(row[col]), str(row[mapped_name])
+                        if src_val != dst_val:
+                            safe_src, safe_dst = src_val.replace("'", "''"), dst_val.replace("'", "''")
+                            case_lines.append(f"    WHEN {col} = '{safe_src}' THEN '{safe_dst}'")
+                    
+                    sql_parts.append(f"  CASE\n" + "\n".join(case_lines) + f"\n    ELSE {col}\n  END AS {col}_CLEANED" if case_lines else f"  {col} AS {col}_CLEANED")
 
             # --- 결과 리포트 출력 ---
+            st.success("✅ 매핑 및 분석 완료!")
             for col in target_cols:
                 res = col_results[col]
                 with st.container():
