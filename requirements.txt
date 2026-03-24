@@ -4,3 +4,4 @@ openpyxl==3.1.2
 psycopg2-binary==2.9.9  # Postgres/NeonDB 사용 시
 sqlalchemy==2.0.25      # DB 연결 방식에 따라 필요시 추가
 # (기타 db_connector.py에서 사용하는 라이브러리를 적어주세요)
+python-dotenv
