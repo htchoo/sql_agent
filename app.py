@@ -50,7 +50,7 @@ except Exception as e:
     st.error(f"DB 커넥터 로드 실패: {e}")
     st.stop()
 
-# --- [유틸리티 함수] ---
+# --- [유틸리티 함수 1: 데이터 매핑] ---
 def apply_hybrid_matching(val, m_table, m_raw_map, m_clean_map, sorted_suffixes, similarity_threshold=0.75):
     if pd.isna(val): return None
     val_str, val_upper = str(val).strip(), str(val).strip().upper()
@@ -65,6 +65,7 @@ def apply_hybrid_matching(val, m_table, m_raw_map, m_clean_map, sorted_suffixes,
     matches = difflib.get_close_matches(val_str, list(m_raw_map.values()), n=1, cutoff=similarity_threshold)
     return matches[0] if matches else None
 
+# --- [유틸리티 함수 2: 시계열 분석] ---
 def analyze_date_periodicity(series):
     try:
         valid_series = series.dropna()
@@ -91,10 +92,47 @@ def analyze_date_periodicity(series):
     except:
         return None, None, None, None
 
-# --- [UI: 데이터 입력 구역 (Session State 적용)] ---
+# --- [🌟 신규 함수: 스마트 자동 매칭 로직] ---
+def find_best_master_table(col_name, all_tables):
+    col_lower = str(col_name).lower()
+    
+    # 1. 완벽한 네이밍 규칙 매칭 (예: div -> div_info_m)
+    for i, t in enumerate(all_tables):
+        t_lower = t.lower()
+        if t_lower == f"{col_lower}_info_m" or t_lower == f"{col_lower}_m" or t_lower == col_lower:
+            return i
+            
+    # 2. 키워드 포함 매칭 (예: isbsd_rnr -> isbsd_info_m)
+    first_word = col_lower.split('_')[0]
+    for i, t in enumerate(all_tables):
+        if first_word in t.lower():
+            return i
+            
+    # 3. Fuzzy(유사도) 매칭 (철자가 비슷할 경우)
+    matches = difflib.get_close_matches(col_lower, [t.lower() for t in all_tables], n=1, cutoff=0.4)
+    if matches:
+        return [t.lower() for t in all_tables].index(matches[0])
+        
+    return 0 # 매칭 실패 시 첫 번째 테이블 기본 반환
+
+def find_best_key_column(col_name, m_cols):
+    col_lower = str(col_name).lower()
+    m_cols_lower = [str(c).lower() for c in m_cols]
+    
+    # 1. 정확히 일치하는 컬럼명
+    if col_lower in m_cols_lower:
+        return m_cols_lower.index(col_lower)
+        
+    # 2. 유사도 기반 매칭 (예: ISBSD_RNR -> rnr)
+    matches = difflib.get_close_matches(col_lower, m_cols_lower, n=1, cutoff=0.4)
+    if matches:
+        return m_cols_lower.index(matches[0])
+        
+    return 0 # 매칭 실패 시 첫 번째 컬럼 기본 반환
+
+# --- [UI: 데이터 입력 구역] ---
 st.subheader("📥 데이터 입력")
 
-# 데이터를 메모리에 안전하게 보관하기 위한 초기화
 if 'source_df' not in st.session_state:
     st.session_state['source_df'] = None
 
@@ -104,7 +142,6 @@ with tab1:
     st.markdown("엑셀에서 데이터와 **컬럼 헤더**를 드래그하여 복사(Ctrl+C)한 뒤 아래 빈칸에 붙여넣기(Ctrl+V) 하세요.")
     pasted_text = st.text_area("데이터 영역:", height=200, placeholder="여기에 데이터를 붙여넣으세요...")
     
-    # 버튼 추가
     if st.button("데이터 적용하기", key="btn_paste", type="primary"):
         if pasted_text.strip():
             try:
@@ -114,7 +151,6 @@ with tab1:
 
 with tab2:
     uploaded_file = st.file_uploader("전처리할 엑셀 파일을 업로드하세요", type=['xlsx', 'csv'])
-    # 버튼 추가
     if st.button("파일 적용하기", key="btn_upload", type="primary"):
         if uploaded_file:
             try:
@@ -125,7 +161,6 @@ with tab2:
             except Exception as e:
                 st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
 
-# 메모리에 저장된 데이터 불러오기
 source_df = st.session_state['source_df']
 
 # --- [데이터 처리 및 UI 출력] ---
@@ -146,10 +181,16 @@ if source_df is not None and not source_df.empty:
         for i, col in enumerate(target_cols):
             with config_cols[i]:
                 st.markdown(f"#### 📍 `{col}`")
-                def_idx = all_tables.index("clndr_m") if "clndr" in str(col).lower() and "clndr_m" in all_tables else 0
-                m_table = st.selectbox("마스터 테이블", all_tables, index=def_idx, key=f"t_{col}")
+                
+                # 스마트 자동 선택 로직 호출
+                def_tab_idx = find_best_master_table(col, all_tables)
+                m_table = st.selectbox("마스터 테이블", all_tables, index=def_tab_idx, key=f"t_{col}")
+                
                 m_cols, _ = db.get_sample_data(m_table)
-                m_key = st.selectbox("기준 키", m_cols, key=f"k_{col}")
+                
+                def_key_idx = find_best_key_column(col, m_cols)
+                m_key = st.selectbox("기준 키", m_cols, index=def_key_idx, key=f"k_{col}")
+                
                 col_mapping_config[col] = {"table": m_table, "key": m_key, "threshold": st.slider("유사도 민감도", 0.0, 1.0, 0.75, key=f"s_{col}")}
 
         if st.button("🚀 분석 실행", type="primary"):
@@ -187,7 +228,7 @@ if source_df is not None and not source_df.empty:
                     
                     sql_parts.append(f"  CASE\n" + "\n".join(case_lines) + f"\n    ELSE {col}\n  END AS {col}_CLEANED" if case_lines else f"  {col} AS {col}_CLEANED")
 
-            # --- [수정된 결과 리포트 출력 구역 (과거 레이아웃 복구 + 시계열 통합)] ---
+            # --- [결과 리포트 출력 구역] ---
             st.success("✅ 매핑 및 분석 완료!")
             
             for col in target_cols:
@@ -195,14 +236,12 @@ if source_df is not None and not source_df.empty:
                 with st.container():
                     st.markdown(f"### 📊 컬럼 분석 결과: `{col}` (Master: {res['master_table']})")
                     
-                    # 1. 상단 지표 영역
                     m1, m2, m3 = st.columns(3)
                     m1.metric("매핑 성공률", f"{res['rate']:.1f}%")
                     if res['p_desc']:
                         m2.metric("데이터 주기성", res['p_desc'])
                         m3.metric("평균 날짜 간격", f"{res['avg_gap']:.1f}일")
                     
-                    # 2. 날짜 분석 차트 영역 (날짜 데이터일 때만 표시)
                     if res['p_desc']:
                         st.write("**📅 날짜 간격 분포 및 특이 데이터**")
                         g1, g2 = st.columns([2, 1])
@@ -213,9 +252,8 @@ if source_df is not None and not source_df.empty:
                                 st.dataframe(res['outliers'], hide_index=True, use_container_width=True)
                             else:
                                 st.success("모든 간격이 일정합니다.")
-                        st.write("") # 간격 띄우기
+                        st.write("")
                     
-                    # 3. 매핑 성공/실패 리스트 영역 (항상 양옆으로 표시!)
                     c_success, c_fail = st.columns(2)
                     with c_success:
                         st.markdown(f"✅ <span style='color:green;font-size:14px'>매핑 성공 (총 {len(res['success_list'])}개 유형)</span>", unsafe_allow_html=True)
