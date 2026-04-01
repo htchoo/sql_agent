@@ -157,7 +157,6 @@ if menu == "데이터 전처리":
 
     source_df = st.session_state['source_df']
 
-    # --- [데이터 처리 및 UI 출력] ---
     if source_df is not None and not source_df.empty:
         st.success("데이터가 성공적으로 로드되었습니다!")
         st.subheader("📋 원본 데이터 프리뷰")
@@ -168,7 +167,6 @@ if menu == "데이터 전처리":
         if target_cols:
             st.divider()
             st.subheader("⚙️ 컬럼별 매핑 및 분석 설정")
-            # st.cache_data를 비워 항상 최신 테이블 목록을 가져옵니다.
             db.get_all_tables.clear() if hasattr(db.get_all_tables, 'clear') else None 
             all_tables = db.get_all_tables()
             
@@ -178,20 +176,15 @@ if menu == "데이터 전처리":
             for i, col in enumerate(target_cols):
                 with config_cols[i]:
                     st.markdown(f"#### 📍 `{col}`")
-                    
                     def_tab_idx = find_best_master_table(col, all_tables)
                     m_table = st.selectbox("마스터 테이블", all_tables, index=def_tab_idx, key=f"t_{col}")
-                    
                     m_cols, _ = db.get_sample_data(m_table)
-                    
                     def_key_idx = find_best_key_column(col, m_cols)
                     m_key = st.selectbox("기준 키", m_cols, index=def_key_idx, key=f"k_{col}")
-                    
                     col_mapping_config[col] = {"table": m_table, "key": m_key, "threshold": st.slider("유사도 민감도", 0.0, 1.0, 0.75, key=f"s_{col}")}
 
             if st.button("🚀 분석 실행", type="primary"):
                 final_df, sql_parts, col_results = source_df.copy(), [], {}
-
                 with st.spinner("데이터 분석 중..."):
                     for col in target_cols:
                         config = col_mapping_config[col]
@@ -225,19 +218,15 @@ if menu == "데이터 전처리":
                         sql_parts.append(f"  CASE\n" + "\n".join(case_lines) + f"\n    ELSE {col}\n  END AS {col}_CLEANED" if case_lines else f"  {col} AS {col}_CLEANED")
 
                 st.success("✅ 매핑 및 분석 완료!")
-                
                 for col in target_cols:
                     res = col_results[col]
                     with st.container():
                         st.markdown(f"### 📊 컬럼 분석 결과: `{col}` (Master: {res['master_table']})")
-                        
                         m1, m2, m3 = st.columns(3)
                         m1.metric("매핑 성공률", f"{res['rate']:.1f}%")
-                        
                         if res['p_desc'] and res['p_desc'] != "분석 불가":
                             m2.metric("데이터 주기성", res['p_desc'])
                             m3.metric("평균 날짜 간격", f"{res['avg_gap']:.1f}일")
-                        
                         c_success, c_fail = st.columns(2)
                         with c_success:
                             st.markdown(f"✅ <span style='color:green;font-size:14px'>매핑 성공 (총 {len(res['success_list'])}개 유형)</span>", unsafe_allow_html=True)
@@ -245,7 +234,6 @@ if menu == "데이터 전처리":
                         with c_fail:
                             st.markdown(f"❌ <span style='color:red;font-size:14px'>매핑 실패 (총 {len(res['fail_list'])}개 유형)</span>", unsafe_allow_html=True)
                             st.dataframe(res['fail_list'], use_container_width=True, height=250, hide_index=True)
-                            
                         st.divider()
 
                 st.subheader("📝 최종 전처리 SQL (BigQuery)")
@@ -253,14 +241,32 @@ if menu == "데이터 전처리":
                 st.code(full_sql, language="sql")
 
 # ==========================================
-# 🔵 메뉴 2: 마스터 테이블 관리 (신규 로직)
+# 🔵 메뉴 2: 마스터 테이블 관리 (업로드 모드 추가)
 # ==========================================
 elif menu == "마스터 테이블 관리":
-    st.title("🗂️ 신규 마스터 테이블 등록")
-    st.info("DB에 새로운 기준 정보(Master)를 업로드하여 팀원들과 공유할 수 있습니다.")
+    st.title("🗂️ 마스터 테이블 등록 및 관리")
+    st.info("DB에 마스터 테이블을 새로 만들거나 데이터를 추가/갱신할 수 있습니다.")
 
-    # 테이블 이름 입력 받기
-    new_table_name = st.text_input("생성할 마스터 테이블 영문 이름 (예: new_product_info_m)", placeholder="띄어쓰기 대신 언더바(_) 사용").strip().lower()
+    # [수정] 테이블 명칭과 업로드 방식을 한 줄에 배치
+    col_t_name, col_t_mode = st.columns([2, 1])
+    
+    with col_t_name:
+        new_table_name = st.text_input("마스터 테이블 영문 이름", placeholder="예: channel_info_m").strip().lower()
+    
+    with col_t_mode:
+        upload_mode_label = st.radio(
+            "업로드 방식 선택",
+            ["Replace", "Delete & Insert", "Append"],
+            index=0,
+            help="재생성: 스키마가 바뀔 때 / 비우고 삽입: 전체 데이터 교체 / 추가: 누적 데이터"
+        )
+        # UI 라벨을 DB 커넥터용 코드로 매핑
+        mode_map = {
+            "Replace": "replace",
+            "Delete & Insert": "delete_insert",
+            "Append": "append"
+        }
+        selected_mode = mode_map[upload_mode_label]
 
     if 'master_df' not in st.session_state:
         st.session_state['master_df'] = None
@@ -268,9 +274,8 @@ elif menu == "마스터 테이블 관리":
     tab1, tab2 = st.tabs(["📋 직접 붙여넣기 (권장)", "📁 파일 업로드"])
 
     with tab1:
-        st.markdown("새로운 마스터로 사용할 데이터와 **컬럼 헤더**를 붙여넣기 하세요.")
+        st.markdown("데이터와 **컬럼 헤더**를 붙여넣기 하세요.")
         pasted_master = st.text_area("데이터 영역:", height=200, placeholder="여기에 마스터 데이터를 붙여넣으세요...")
-        
         if st.button("마스터 데이터 읽기", key="btn_master_paste"):
             if pasted_master.strip():
                 try:
@@ -294,26 +299,28 @@ elif menu == "마스터 테이블 관리":
 
     master_df = st.session_state['master_df']
 
-    # 데이터 미리보기 및 DB 전송
     if master_df is not None and not master_df.empty:
         st.subheader("👀 등록할 마스터 데이터 미리보기")
         st.dataframe(master_df.head(5), use_container_width=True)
-        st.write(f"총 데이터 건수: {len(master_df)}건 / 컬럼 수: {len(master_df.columns)}개")
+        st.write(f"건수: {len(master_df)}건 / 컬럼: {len(master_df.columns)}개 / 방식: **{upload_mode_label}**")
 
-        if st.button("🚀 DB에 마스터 테이블 최종 등록하기", type="primary"):
+        if st.button(f"🚀 {upload_mode_label} 방식으로 최종 등록하기", type="primary"):
             if not new_table_name:
                 st.warning("테이블 이름을 먼저 입력해 주세요!")
             elif not re.match("^[a-z0-9_]+$", new_table_name):
-                st.warning("테이블 이름은 영문 소문자, 숫자, 언더바(_)만 사용 가능합니다.")
+                st.warning("이름은 영문 소문자, 숫자, 언더바(_)만 가능합니다.")
             else:
-                with st.spinner(f"'{new_table_name}' 테이블을 생성 중입니다..."):
-                    # db_connector에 새로 만든 함수 호출
-                    success, message = db.upload_master_table(master_df, new_table_name)
+                with st.spinner(f"데이터를 {upload_mode_label} 중..."):
+                    # [수정] db.upload_master_table 호출 시 selected_mode 인자 전달
+                    success, message = db.upload_master_table(master_df, new_table_name, selected_mode)
                     
                     if success:
                         st.success(message)
                         st.balloons()
-                        # 업로드 완료 후 세션 초기화
                         st.session_state['master_df'] = None
                     else:
-                        st.error(message)
+                        # 테이블이 없는데 append/truncate 하려고 할 때의 가이드 추가
+                        if "does not exist" in str(message).lower():
+                            st.error("해당 테이블이 존재하지 않습니다. 먼저 '테이블 재생성'으로 최초 등록을 해주세요.")
+                        else:
+                            st.error(message)
